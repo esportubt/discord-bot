@@ -21,41 +21,50 @@ class WeblingSync(commands.Cog):
     async def sync_members(self):
         pass
 
-    @commands.hybrid_command(name="syncall")
-    async def sync_all(self, ctx: commands.Context) -> None:
-        """Sync all members"""
-        pass
-    
     @commands.hybrid_command()
-    async def list_members(self, ctx: commands.Context) -> None:
-        # eligible_member_ids = await self._get_eligible_members()
-        eligible_member_ids = [200229833475620864]
-        print(f'got {len(eligible_member_ids)} eligible members')
+    async def sync_all_members(self, ctx: commands.Context) -> None:
         
-        for memberid in eligible_member_ids:
-            member = ctx.message.guild.get_member(memberid)
+        # give bot time to make API calls
+        await ctx.defer()
+        eligible_discord_ids = await self._get_eligible_members()
+        print(eligible_discord_ids)
+
+        if len(eligible_discord_ids) == 0:
+            await ctx.send("No eligible members found", ephemeral=True)
+            return
+        
+        for member_id in eligible_discord_ids:
+            member = ctx.message.guild.get_member(member_id)
             if member is None:
-                print(f"Member {memberid} not found")
-                return
-            role = ctx.message.guild.get_role(1347922504269828176)
+                print(f"Member {member_id} not found")
+                break
+            role = ctx.message.guild.get_role(self.bot.eligible_role_id)
             if role is None:
                 print("Role not found")
-                return
-            await member.add_roles(role)
-            print(f"Added role to {member.name}")
-            print(self.bot.eligible_role_id)
+                break
+            try:
+                await member.add_roles(role)
+            except discord.errors.Forbidden as e:
+                print(f"Not allowed to add role to member {member.name}")
+        
+        await ctx.send(f"Synced {len(eligible_discord_ids)} members", ephemeral=True)
 
     async def _get_eligible_members(self) -> list[int]:
-        club_members = await self._get_club_members()
-        print(f'got {len(club_members)} club members')
-        eligible_members = []
-        for member in club_members:
-            print(f'checking member {member}')
-            discord_id = await self._get_discord_id_of_member(member)
-            if discord_id:
-                eligible_members.append(discord_id)
-                print(f'added id {discord_id}')
-        return eligible_members
+        request = WEBLING_API_URL + "/member?filter=$parents.$id = 100 AND NOT `Discord-ID` IS EMPTY&format=full"
+        response = requests.get(request, headers=WEBLING_API_HEADER)
+
+        if response.status_code != 200:
+            raise RuntimeError(f'Request failed with status code {response.status_code}')
+        
+        data = response.json()
+        
+        # TODO: check if data is iterable
+
+        discord_ids = []
+        for member in data:
+            discord_id = int(member['properties']['Discord-ID'])
+            discord_ids.append(discord_id)
+        return discord_ids
 
     async def _get_club_members(self) -> list[int]:
         request = WEBLING_API_URL + "/membergroup/" + WEBLING_MEMBERGROUP_ID
@@ -67,26 +76,26 @@ class WeblingSync(commands.Cog):
             data = response.json()
             return data['children']['member']
         
-    @DeprecationWarning
-    async def _get_discord_name_of_member(self, member_id) -> str:
-        request = WEBLING_API_URL + "/member/" + str(member_id)
+    async def _get_members_with_discord_id(self) -> list[int]:
+        request = WEBLING_API_URL + "/member?filter=$parents.$id = 100 AND NOT `Discord-ID` IS EMPTY"
         response = requests.get(request, headers=WEBLING_API_HEADER)
-
+        
         if response.status_code != 200:
-            print(f'Request failed with status code {response.status_code}')
+            raise RuntimeError(f'Request failed with status code {response.status_code}')
         else:
             data = response.json()
-            return data['properties']['Discord-Benutzername']
+            return data['objects']
     
     async def _get_discord_id_of_member(self, member_id) -> int:
         request = WEBLING_API_URL + "/member/" + str(member_id)
         response = requests.get(request, headers=WEBLING_API_HEADER)
 
         if response.status_code != 200:
-            print(f'Request failed with status code {response.status_code}')
+            raise RuntimeError(f'Request failed with status code {response.status_code}')
         else:
             data = response.json()
             return data['properties']['Discord-ID']
+            
         
         
 
