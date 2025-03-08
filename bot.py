@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 
-DISCORD_ELIGIBLE_ROLE_ID = os.getenv('DISCORD_ELIGIBLE_ROLE_ID')
+
 DISCORD_GUILD_ID = os.getenv('DISCORD_GUILD_ID')    
 
 
@@ -22,8 +22,6 @@ intents.guild_scheduled_events = True
 
 
 bot = commands.Bot(command_prefix=commands.when_mentioned, intents=intents)
-
-bot.eligible_role_id = DISCORD_ELIGIBLE_ROLE_ID
 
 @bot.event
 async def setup_hook():

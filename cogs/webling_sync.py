@@ -4,17 +4,18 @@ import discord
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
-# load token from .env
-load_dotenv(dotenv_path='../.env')
-
-WEBLING_BASE_DOMAIN = str(os.getenv('WEBLING_BASE_DOMAIN'))
-WEBLING_API_KEY = os.getenv('WEBLING_API_KEY')
-WEBLING_API_URL = "https://" + WEBLING_BASE_DOMAIN + ".webling.ch/api/1"
-WEBLING_API_HEADER = {'apikey':WEBLING_API_KEY}
-WEBLING_MEMBERGROUP_ID = os.getenv('WEBLING_MEMBERGROUP_ID')
 
 class WeblingSync(commands.Cog):
     def __init__(self, bot: commands.Bot):
+        # load token from .env
+        load_dotenv(dotenv_path='../.env')
+        base_domain = str(os.getenv('WEBLING_BASE_DOMAIN'))
+        self.api_url = "https://" + base_domain + ".webling.ch/api/1"
+        apikey = os.getenv('WEBLING_API_KEY')
+        self.api_header = {'apikey':apikey}
+        self.membergroup_id = int(os.getenv('WEBLING_MEMBERGROUP_ID'))
+        self.member_discord_role_id = int(os.getenv('WEBLING_MEMBER_DISCORD_ROLE_ID'))
+    
         self.bot = bot
 
     @tasks.loop(minutes=60)
@@ -26,6 +27,11 @@ class WeblingSync(commands.Cog):
         
         # give bot time to make API calls
         await ctx.defer()
+        role = ctx.message.guild.get_role(self.member_discord_role_id)
+        if role is None:
+            ctx.send("Error: Role not found", ephemeral=True)
+            return
+        
         eligible_discord_ids = await self._get_eligible_members()
         print(eligible_discord_ids)
 
@@ -38,10 +44,6 @@ class WeblingSync(commands.Cog):
             if member is None:
                 print(f"Member {member_id} not found")
                 break
-            role = ctx.message.guild.get_role(self.bot.eligible_role_id)
-            if role is None:
-                print("Role not found")
-                break
             try:
                 await member.add_roles(role)
             except discord.errors.Forbidden as e:
@@ -50,8 +52,8 @@ class WeblingSync(commands.Cog):
         await ctx.send(f"Synced {len(eligible_discord_ids)} members", ephemeral=True)
 
     async def _get_eligible_members(self) -> list[int]:
-        request = WEBLING_API_URL + "/member?filter=$parents.$id = 100 AND NOT `Discord-ID` IS EMPTY&format=full"
-        response = requests.get(request, headers=WEBLING_API_HEADER)
+        request = self.api_url + "/member?filter=$parents.$id = 100 AND NOT `Discord-ID` IS EMPTY&format=full"
+        response = requests.get(request, headers=self.api_header)
 
         if response.status_code != 200:
             raise RuntimeError(f'Request failed with status code {response.status_code}')
@@ -67,8 +69,8 @@ class WeblingSync(commands.Cog):
         return discord_ids
 
     async def _get_club_members(self) -> list[int]:
-        request = WEBLING_API_URL + "/membergroup/" + WEBLING_MEMBERGROUP_ID
-        response = requests.get(request, headers=WEBLING_API_HEADER)
+        request = self.api_url + "/membergroup/" + self.membergroup_id
+        response = requests.get(request, headers=self.api_header)
 
         if response.status_code != 200:
             print(f'Request failed with status code {response.status_code}')
@@ -77,8 +79,8 @@ class WeblingSync(commands.Cog):
             return data['children']['member']
         
     async def _get_members_with_discord_id(self) -> list[int]:
-        request = WEBLING_API_URL + "/member?filter=$parents.$id = 100 AND NOT `Discord-ID` IS EMPTY"
-        response = requests.get(request, headers=WEBLING_API_HEADER)
+        request = self.api_url + "/member?filter=$parents.$id = " + self.membergroup_id + " AND NOT `Discord-ID` IS EMPTY"
+        response = requests.get(request, headers=self.api_header)
         
         if response.status_code != 200:
             raise RuntimeError(f'Request failed with status code {response.status_code}')
@@ -87,8 +89,8 @@ class WeblingSync(commands.Cog):
             return data['objects']
     
     async def _get_discord_id_of_member(self, member_id) -> int:
-        request = WEBLING_API_URL + "/member/" + str(member_id)
-        response = requests.get(request, headers=WEBLING_API_HEADER)
+        request = self.api_url + "/member/" + str(member_id)
+        response = requests.get(request, headers=self.api_header)
 
         if response.status_code != 200:
             raise RuntimeError(f'Request failed with status code {response.status_code}')
