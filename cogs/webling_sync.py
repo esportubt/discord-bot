@@ -33,7 +33,6 @@ class WeblingSync(commands.Cog):
             return
         
         eligible_discord_ids = await self._get_eligible_members()
-        print(eligible_discord_ids)
 
         if len(eligible_discord_ids) == 0:
             await ctx.send("No eligible members found", ephemeral=True)
