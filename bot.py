@@ -23,6 +23,8 @@ intents.guild_scheduled_events = True
 
 bot = commands.Bot(command_prefix=commands.when_mentioned, intents=intents)
 
+bot.guild = bot.get_guild(DISCORD_GUILD_ID)
+
 @bot.event
 async def setup_hook():
     for file in pathlib.Path("cogs").rglob("*.py"):
