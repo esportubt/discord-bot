@@ -68,11 +68,13 @@ class WeblingSync(commands.Cog):
         """
 
         print("Syncing all members")
+
+        guild = ctx.message.guild
         
         # give bot time to make API calls
         await ctx.defer()
 
-        role = ctx.message.guild.get_role(self.discord_member_role_id)
+        role = guild.get_role(self.discord_member_role_id)
 
         if role is None:
             await ctx.send("Error: Role-ID not found")
@@ -80,39 +82,59 @@ class WeblingSync(commands.Cog):
 
         # remove role from everyone
         # TODO: remove only from members who arent eligible
-        current_role_users = role.members 
+        current_role_users = role.members
+        all_users = guild.members
         
         # get all eligible members
         eligible_members = await self._get_eligible_members()
-        
+
+        # TODO: these could be ints
         old_members = []
         new_members = []
-        failed_members = []
+        failed_members = []     # this has to be list of ids
         for member in eligible_members:
-            member_id = member['properties']['Mitglieder ID']
-            user_id = int(member['properties']['Discord-ID'])
+            # TODO: these properties should be envs
+            member_id = str(member['properties']['Mitglieder ID'])
+            
 
-            try:
-                user = ctx.message.guild.get_member(user_id)
-            except discord.errors.NotFound:
-                print(f"Member with Discord-ID {user_id} not found")
+            user = None
+            # try to fetch user by ID
+            user_id = member['properties']['Discord-ID']
+            if user_id:
+                user_id = int(user_id)
+                user = guild.get_member(user_id)
+
+            if user is None:
+                # if it fails, try to fetch by name
+                user_name = member['properties']['Discord-Benutzername']
+                if user_name:
+                    user_name = str(user_name)
+                    user = next((u for u in all_users if u.name == user_name), None)
+            if user is None:
+                # if that failes, too, add to failed members
                 failed_members.append(member_id)
-            else:
+            else:   # user found
+                # check if user already has role
                 if user not in current_role_users:
+                    # if not, try to add role
                     try:
                         await user.add_roles(role)
                         new_members.append(member_id)
                     except discord.errors.Forbidden:
+                        # if that fails, add to failed members
                         print(f"Not allowed to add role to user {user.name}")
                         failed_members.append(member_id)
-                else:
+                else:   #if user already has role
+                    # keep track of not eligible users with role
                     current_role_users.remove(user)
+                    # add to old members
                     old_members.append(member_id)
 
-        # remove role from everyone not eligable
+        # remove role from everyone not eligible
         for user in current_role_users:
             await user.remove_roles(role)
 
+        # sent sync report
         embed = discord.Embed(title="Sync Report", color=0x009260)
         embed.add_field(name=f"Old Members {len(old_members)}", value="")
         embed.add_field(name=f"New Members {len(new_members)}", value="")
@@ -127,7 +149,7 @@ class WeblingSync(commands.Cog):
         """
         This makes one big API call to Webling and prefilters for members that have the correct membergroups and a Discord-ID. Which is a lot faster than calling each member individually.
         """
-        request = f"{self.api_url}/member?filter=$parents.$id IN {str(self.valid_membergroups)} AND NOT `Discord-ID` IS EMPTY&format=full"
+        request = f"{self.api_url}/member?filter=$parents.$id IN {str(self.valid_membergroups)} AND (NOT `Discord-ID` IS EMPTY OR NOT `Discord-Benutzername` IS EMPTY)&format=full"
         response = requests.get(request, headers=self.api_header)
 
         if response.status_code != 200:
