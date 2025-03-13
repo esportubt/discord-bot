@@ -11,7 +11,7 @@ load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 
 
-DISCORD_GUILD_ID = os.getenv('DISCORD_GUILD_ID')    
+DISCORD_GUILD_ID = int(os.getenv('DISCORD_GUILD_ID'))
 
 
 intents = discord.Intents.default()
@@ -23,8 +23,6 @@ intents.guild_scheduled_events = True
 
 bot = commands.Bot(command_prefix=commands.when_mentioned, intents=intents)
 
-bot.guild = bot.get_guild(DISCORD_GUILD_ID)
-
 @bot.event
 async def setup_hook():
     for file in pathlib.Path("cogs").rglob("*.py"):
@@ -34,6 +32,11 @@ async def setup_hook():
 
 @bot.event
 async def on_ready():
+    guild = bot.get_guild(DISCORD_GUILD_ID)
+    if guild is None:
+        print(f"Guild with ID {DISCORD_GUILD_ID} not found")
+    else:
+        bot.guild = guild
     await bot.change_presence(status=discord.Status.online)
     await bot.tree.sync()
     print(f'{bot.user} is online!')
@@ -49,9 +52,8 @@ async def on_message(message: discord.Message) -> None:  # This event is called 
 async def ping(ctx: commands.Context) -> None:  
     await ctx.send(f"> Pong! {round(bot.latency * 1000)}ms")
 
-@bot.command()
-@commands.is_owner()
-async def sync(ctx: commands.Context) -> None:
+@bot.hybrid_command()
+async def reload(ctx: commands.Context) -> None:
     """Sync commands"""
     synced = await ctx.bot.tree.sync()
     await ctx.send(f"Synced {len(synced)} commands globally", ephemeral=True)
