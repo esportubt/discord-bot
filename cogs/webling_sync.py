@@ -50,8 +50,6 @@ class WeblingSync(commands.Cog):
             await ctx.send("Error: Role-ID not found")
             return
 
-        # remove role from everyone
-        # TODO: remove only from members who arent eligible
         current_role_users = role.members
         all_users = guild.members
         
@@ -67,20 +65,9 @@ class WeblingSync(commands.Cog):
             member_id = str(member['properties']['Mitglieder ID'])
             
 
-            user = None
-            # try to fetch user by ID
-            user_id = member['properties']['Discord-ID']
-            if user_id:
-                user_id = int(user_id)
-                user = guild.get_member(user_id)
-
-            if user is None:
-                # if it fails, try to fetch by name
-                user_name = member['properties']['Discord-Benutzername']
-                if user_name:
-                    user_name = str(user_name)
-                    user = next((u for u in all_users if u.name == user_name), None)
-            if user is None:
+            try:
+                user = self._get_user_by_member(member)
+            except self.UserNotFound:
                 # if that failes, too, add to failed members
                 failed_members.append(member_id)
             else:   # user found
@@ -127,26 +114,66 @@ class WeblingSync(commands.Cog):
 
         This uses many seperate API calls to fetch discord ids from webling members. If many members have changed, use `sync all` instead.
         """
+        guild = self.bot.guild
+
+        # fetch current users on server
+        all_users = guild.members
+        
+        # fetch current members of role
+        role = guild.get_role(self.discord_member_role_id)
+        current_role_users = role.members
+        
+        # fetch changed members
         changed_member_ids = await self._get_changed_members()
+
+        added_members = []
+        removed_members = []
+        failed_members = []
 
         if len(changed_member_ids) == 0:
             print("No changes")
             return
 
         for member_id in changed_member_ids:
-            member = self._get_member_by_id(member_id)
+            member = await self._get_member_by_id(member_id)
 
-            if member:
-                membergroups = list(map(int, member['parents']))
-                has_disord_id = member['properties']['Discord-ID'] is not None
+            if member is None:
+                failed_members.append(member_id)
+                continue
+            
+            try:
+                user = self._get_user_by_member(member)
+            except self.UserNotFound:
+                failed_members.append(member_id)
+                continue
+            
+            if self._check_eligibility_of_member(member):
+                # user is eligible, try to add role
 
-                if membergroups in self.valid_membergroups and has_disord_id:
-                    print(f"Adding member role to {member_id}")
-                    await member.add_roles(self.member_role)
+                # check if user already has role
+                if user not in current_role_users:
+                    # if not, try to add role
+                    try:
+                        await user.add_roles(role)
+                    except discord.errors.Forbidden:
+                        # if that fails, add to failed members
+                        failed_members.append(member_id)
+                    else:
+                        added_members.append(member_id)
+            else:
+                # user is not eligible, try to remove role
+                try:
+                    await user.remove_roles(role)
+                except discord.errors.Forbidden:
+                    # if that fails, add to failed members
+                    failed_members.append(member_id)
                 else:
-                    await member.remove_roles(self.member_role)
-                    print(f"Removing member role from {member_id}")
+                    removed_members.append(member_id)
+
+        # set last sync time
         self.last_sync = time.time()
+
+        print(f"Sync loop finished. Added: {len(added_members)}, Removed: {len(removed_members)}, Failed: {len(failed_members)}")
     
     @sync.command(name="on")
     async def sync_on(self, ctx : commands.Context) -> None:
@@ -183,6 +210,35 @@ class WeblingSync(commands.Cog):
             embed.colour = 0x333438
         
         await ctx.send(embed=embed)
+
+    def _check_eligibility_of_member(self, member: object) -> bool:
+        """ Checks if member is in at least one eligible membergroup. """
+        membergroups = list(map(int, member['parents']))
+        return bool([i for i in membergroups if i in self.valid_membergroups])
+
+    def _get_user_by_member(self, member: object) -> discord.Member:
+        """
+        Fetch discord user of a given member.
+        Tries to fetch by user id first, then by username. 
+        """
+        guild : discord.Guild = self.bot.guild
+        user = None
+        # try to fetch user by ID
+        user_id = member['properties']['Discord-ID']
+        if user_id:
+            user_id = int(user_id)
+            user = guild.get_member(user_id)
+        if user is None:
+            # if it fails, try to fetch by name
+            user_name = member['properties']['Discord-Benutzername']
+            if user_name:
+                user_name = str(user_name)
+                all_users = guild.members
+                user = next((u for u in all_users if u.name == user_name), None)
+        if user is None:
+            raise self.UserNotFound()
+        else:
+            return user
 
     async def _get_eligible_members(self) -> list[object]:
         """
@@ -255,7 +311,7 @@ class WeblingSync(commands.Cog):
             return data['properties']['Discord-ID']
             
     async def _get_changes(self) -> object:
-        request = self.api_url + "/changes/" + self.last_sync
+        request = self.api_url + "/changes/" + str(self.last_sync)
 
         response = requests.get(request, headers=self.api_header)
 
@@ -267,12 +323,13 @@ class WeblingSync(commands.Cog):
     
     async def _get_changed_members(self) -> list[int]:
         changes = await self._get_changes()
-        
-        changed_member_ids = changes['objects']['members']
+        changed_member_ids = changes['objects']['member']
 
         # cast to list of integers
         return list(map(int, changed_member_ids))
 
+    class UserNotFound(Exception):
+        """Raise when discord user could not be fetched"""
 
 
 async def setup(bot):
