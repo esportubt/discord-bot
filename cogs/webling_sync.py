@@ -26,36 +26,6 @@ class WeblingSync(commands.Cog):
         self.last_sync = 1  # never synced
 
 
-    """@tasks.loop(minutes=60)
-    async def sync_members(self):
-        
-        Automatically syncs member role. 
-
-        Webling API doesn't allow filtering on a fixed set of members, e.g. "/members/440,512?filter=...". 
-        Therefore this requires manual checking whether the member has the correct membergroups and a Discord-ID. A positive check results in the bot granting them the member role, otherwise it is removed.
-        
-        changed_member_ids = await self._get_changed_members()
-
-        if len(changed_member_ids) == 0:
-            print("No changes")
-            return
-
-        for member_id in changed_member_ids:
-            member = self._get_member_by_id(member_id)
-
-            if member:
-                membergroups = list(map(int, member['parents']))
-                has_disord_id = member['properties']['Discord-ID'] is not None
-
-                if membergroups in self.valid_membergroups and has_disord_id:
-                    print(f"Adding member role to {member_id}")
-                    await member.add_roles(self.member_role)
-                else:
-                    await member.remove_roles(self.member_role)
-                    print(f"Removing member role from {member_id}")
-        self.last_sync = time.time()
-    """
-        
     @commands.hybrid_group()
     async def sync(self, ctx: commands.Context) -> None:
         """Sync group"""
@@ -134,6 +104,9 @@ class WeblingSync(commands.Cog):
         for user in current_role_users:
             await user.remove_roles(role)
 
+        # set last sync time for sync loop
+        self.last_sync = time.time()
+
         # sent sync report
         embed = discord.Embed(title="Sync Report", color=0x009260)
         embed.add_field(name=f"Old Members {len(old_members)}", value="")
@@ -144,6 +117,72 @@ class WeblingSync(commands.Cog):
 
         await ctx.send(embed=embed)
 
+    @tasks.loop(minutes=60)
+    async def sync_loop(self):
+        """  
+        Automatically syncs member role. 
+
+        Webling API doesn't allow filtering on a fixed set of members, e.g. "/members/440,512?filter=...". 
+        Therefore this requires manual checking whether the member has the correct membergroups and a Discord-ID. A positive check results in the bot granting them the member role, otherwise it is removed.
+
+        This uses many seperate API calls to fetch discord ids from webling members. If many members have changed, use `sync all` instead.
+        """
+        changed_member_ids = await self._get_changed_members()
+
+        if len(changed_member_ids) == 0:
+            print("No changes")
+            return
+
+        for member_id in changed_member_ids:
+            member = self._get_member_by_id(member_id)
+
+            if member:
+                membergroups = list(map(int, member['parents']))
+                has_disord_id = member['properties']['Discord-ID'] is not None
+
+                if membergroups in self.valid_membergroups and has_disord_id:
+                    print(f"Adding member role to {member_id}")
+                    await member.add_roles(self.member_role)
+                else:
+                    await member.remove_roles(self.member_role)
+                    print(f"Removing member role from {member_id}")
+        self.last_sync = time.time()
+    
+    @sync.command(name="on")
+    async def sync_on(self, ctx : commands.Context) -> None:
+        try:
+            self.sync_loop.start()
+        except RuntimeError as e:
+            await ctx.send(f"{e.args[0]}")
+        else:
+            await ctx.send("Task has been launched successfully.")
+    
+    @sync.command(name="off")
+    async def sync_off(self, ctx : commands.Context) -> None:
+        try:
+            self.sync_loop.stop()
+        except Exception as e:
+            await ctx.send(f"{e.args[0]}")
+        else:
+            await ctx.send("Task is stopping gracefully.")
+
+    @sync.command(name="status")
+    async def sync_status(self, ctx : commands.Context) -> None:
+        is_running = self.sync_loop.is_running()
+        has_failed = self.sync_loop.failed()
+
+        embed = discord.Embed()
+        if has_failed:
+            embed.title = "Task has failed."
+            embed.colour = 0xdb1c55
+        elif is_running:
+            embed.title = "Task is running."
+            embed.colour = 0x009260
+        else:
+            embed.title = "Task has stopped."
+            embed.colour = 0x333438
+        
+        await ctx.send(embed=embed)
 
     async def _get_eligible_members(self) -> list[object]:
         """
