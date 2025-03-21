@@ -182,6 +182,7 @@ class WeblingSync(commands.Cog):
         except RuntimeError as e:
             await ctx.send(f"{e.args[0]}")
         else:
+            print("Sync task has been launched successfully.")
             await ctx.send("Task has been launched successfully.")
     
     @sync.command(name="off")
@@ -191,6 +192,7 @@ class WeblingSync(commands.Cog):
         except Exception as e:
             await ctx.send(f"{e.args[0]}")
         else:
+            print("Sync task is stopping gracefully.")
             await ctx.send("Task is stopping gracefully.")
 
     @sync.command(name="status")
