@@ -22,9 +22,16 @@ class WeblingSync(commands.Cog):
         self.valid_membergroups = (membergroup_id, new_membergroup_id)
         self.discord_member_role_id = int(os.getenv('WEBLING_DISCORD_MEMBER_ROLE_ID'))
         
-        
-        self.last_sync = 1  # never synced
+        # never synced
+        self.last_sync = 1
+        self.last_results = None
 
+    async def cog_load(self):
+        # self.sync_loop.start()
+        pass
+    
+    async def cog_unload(self):
+        self.sync_loop.stop()
 
     @commands.hybrid_group()
     async def sync(self, ctx: commands.Context) -> None:
@@ -36,8 +43,7 @@ class WeblingSync(commands.Cog):
         """
         Removes role from everyone and re-add it to everyone eligible.
         """
-
-        print("Syncing all members")
+        print(f"{ctx.author} called sync changes.")
 
         guild = ctx.message.guild
         
@@ -56,127 +62,101 @@ class WeblingSync(commands.Cog):
         # get all eligible members
         eligible_members = await self._get_eligible_members()
 
-        # TODO: these could be ints
-        old_members = []
-        new_members = []
-        failed_members = []     # this has to be list of ids
+        if eligible_members is None:
+            await ctx.send("No eligible members.")
+            return
+
+        old : list[str] = []
+        new : list[str] = []
+        not_found : list[int] = []
+        removed : list[str] = []
+        forbidden : list[str] = []
+
         for member in eligible_members:
             # TODO: these properties should be envs
             member_id = str(member['properties']['Mitglieder ID'])
             
-
             try:
                 user = self._get_user_by_member(member)
             except self.UserNotFound:
-                # if that failes, too, add to failed members
-                failed_members.append(member_id)
+                # if that failes, add to not_found
+                print(f"Discord user of member {member_id} not found.")
+                not_found.append(member_id)
             else:   # user found
+
                 # check if user already has role
                 if user not in current_role_users:
                     # if not, try to add role
                     try:
                         await user.add_roles(role)
-                        new_members.append(member_id)
+                        new.append(user.name)
                     except discord.errors.Forbidden:
-                        # if that fails, add to failed members
+                        # if that fails, add to forbidden
                         print(f"Not allowed to add role to user {user.name}")
-                        failed_members.append(member_id)
+                        forbidden.append(user.name)
                 else:   #if user already has role
                     # keep track of not eligible users with role
                     current_role_users.remove(user)
                     # add to old members
-                    old_members.append(member_id)
+                    old.append(user.name)
 
         # remove role from everyone not eligible
         for user in current_role_users:
-            await user.remove_roles(role)
+            try:
+                await user.remove_roles(role)
+                removed.append(user.name)
+            except discord.errors.Forbidden:
+                # add to forbidden
+                print(f"Not allowed to remove role from user {user.name}")
+                forbidden.append(user.name)
 
         # set last sync time for sync loop
-        self.last_sync = time.time()
+        self.last_sync = int(time.time())
 
         # sent sync report
-        embed = discord.Embed(title="Sync Report", color=0x009260)
-        embed.add_field(name=f"Old Members {len(old_members)}", value="")
-        embed.add_field(name=f"New Members {len(new_members)}", value="")
-        embed.add_field(name=f"Removed Members {len(current_role_users)}", value="")
-        if len(failed_members) > 0:
-            embed.add_field(name=f"Failed Members", value=f"{','.join(failed_members)}", inline=True)
+        embed = discord.Embed(title="Sync All Report", color=0x009260)
+        embed.add_field(name=f"Old Members ({len(old)})", value=f"{', '.join(list(map(str, old)))}")
+        embed.add_field(name=f"New Members ({len(new)})", value=f"{', '.join(list(map(str, new)))}")
+        embed.add_field(name=f"Removed Members ({len(current_role_users)})", value=f"{', '.join(list(map(str, removed)))}")
+
+        if len(not_found) > 0:
+            embed.add_field(name=f"Member IDs with unmatched discord references ({len(not_found)})", value=f"{', '.join(list(map(str, not_found)))}", inline=True)
+
+        if len(forbidden) > 0:
+            embed.add_field(name=f"Discord users that could not be modifie({len(forbidden)})", value=f"{', '.join(list(map(str, forbidden)))}", inline=True)
+
+        await ctx.send(embed=embed)
+
+
+    @sync.command(name="changes")
+    async def sync_changes(self, ctx: commands.Context) -> None:
+        """
+        Syncs all changed members since last sync. 
+        """
+        print(f"{ctx.author} called sync changes.")
+        # give bot time to make API calls
+        await ctx.defer()
+        results =  await self._sync_changes()
+
+        embed = results.make_embed()
 
         await ctx.send(embed=embed)
 
     @tasks.loop(minutes=60)
     async def sync_loop(self):
-        """  
-        Automatically syncs member role. 
+        results = await self._sync_changes()
+        self.last_results = results
 
-        Webling API doesn't allow filtering on a fixed set of members, e.g. "/members/440,512?filter=...". 
-        Therefore this requires manual checking whether the member has the correct membergroups and a Discord-ID. A positive check results in the bot granting them the member role, otherwise it is removed.
+    @sync.command(name="results")
+    async def sync_results(self, ctx : commands.Context) -> None:
+        """Prints the last sync changes results."""
+        print(f"{ctx.author} called sync results.")
 
-        This uses many seperate API calls to fetch discord ids from webling members. If many members have changed, use `sync all` instead.
-        """
-        guild = self.bot.guild
-
-        # fetch current users on server
-        all_users = guild.members
-        
-        # fetch current members of role
-        role = guild.get_role(self.discord_member_role_id)
-        current_role_users = role.members
-        
-        # fetch changed members
-        changed_member_ids = await self._get_changed_members()
-
-        added_members = []
-        removed_members = []
-        failed_members = []
-
-        if len(changed_member_ids) == 0:
-            print("No changes")
-            return
-
-        for member_id in changed_member_ids:
-            member = await self._get_member_by_id(member_id)
-
-            if member is None:
-                failed_members.append(member_id)
-                continue
-            
-            try:
-                user = self._get_user_by_member(member)
-            except self.UserNotFound:
-                failed_members.append(member_id)
-                continue
-            
-            if self._check_eligibility_of_member(member):
-                # user is eligible, try to add role
-
-                # check if user already has role
-                if user not in current_role_users:
-                    # if not, try to add role
-                    try:
-                        await user.add_roles(role)
-                    except discord.errors.Forbidden:
-                        # if that fails, add to failed members
-                        failed_members.append(member_id)
-                    else:
-                        added_members.append(member_id)
-            else:
-                # user is not eligible, try to remove role
-                try:
-                    await user.remove_roles(role)
-                except discord.errors.Forbidden:
-                    # if that fails, add to failed members
-                    failed_members.append(member_id)
-                else:
-                    removed_members.append(member_id)
-
-        # set last sync time
-        self.last_sync = time.time()
-
-        print(f"Sync loop finished. Added: {len(added_members)}, Removed: {len(removed_members)}, Failed: {len(failed_members)}")
     
     @sync.command(name="on")
     async def sync_on(self, ctx : commands.Context) -> None:
+        """Turns on the sync loop."""
+        print(f"{ctx.author} called sync on.")
         try:
             self.sync_loop.start()
         except RuntimeError as e:
@@ -187,6 +167,8 @@ class WeblingSync(commands.Cog):
     
     @sync.command(name="off")
     async def sync_off(self, ctx : commands.Context) -> None:
+        """Shuts the sync loop down."""
+        print(f"{ctx.author} called sync off.")
         try:
             self.sync_loop.stop()
         except Exception as e:
@@ -197,6 +179,8 @@ class WeblingSync(commands.Cog):
 
     @sync.command(name="status")
     async def sync_status(self, ctx : commands.Context) -> None:
+        """Returns the current status of the sync loop."""
+        print(f"{ctx.author} called sync status.")
         is_running = self.sync_loop.is_running()
         has_failed = self.sync_loop.failed()
 
@@ -212,6 +196,79 @@ class WeblingSync(commands.Cog):
             embed.colour = 0x333438
         
         await ctx.send(embed=embed)
+
+    async def _sync_changes(self):
+        """  
+        Syncs changed members. 
+
+        Webling API doesn't allow filtering on a fixed set of members, e.g. "/members/440,512?filter=...". 
+        Therefore this requires manual checking whether the member has the correct membergroups and a Discord-ID. A positive check results in the bot granting them the member role, otherwise it is removed.
+
+        This uses many seperate API calls to fetch discord ids from webling members. If many members have changed, use `sync all` instead.
+        """
+        print("Syncing changes")
+
+        new = []
+        removed = []
+        not_found = []
+        forbidden : list[str] = []
+
+        # fetch current members of role
+        guild : discord.Guild = self.bot.guild
+        role = guild.get_role(self.discord_member_role_id)
+        current_role_users = role.members
+
+        # fetch changed members
+        changed_member_ids = await self._get_changed_members()
+
+        if changed_member_ids is None:
+            return self.SyncChangesResults(new, removed)
+        
+        print(f"Fetched {len(changed_member_ids)} changed members")
+
+        for member_id in changed_member_ids:
+            member = await self._get_member_by_id(member_id)
+
+            if member is None:
+                print(f"Member {member_id} not found.")
+                continue
+            
+            try:
+                user = self._get_user_by_member(member)
+            except self.UserNotFound:
+                print(f"User {member_id} not found.")
+                not_found.append(member_id)
+                continue
+            
+            if self._check_eligibility_of_member(member):
+                # user is eligible, try to add role
+
+                # check if user already has role
+                if user not in current_role_users:
+                    # if not, try to add role
+                    try:
+                        await user.add_roles(role)
+                    except discord.errors.Forbidden:
+                        # if that fails, add to failed members
+                        forbidden.append(user.name)
+                    else:
+                        new.append(member_id)
+            else:
+                # user is not eligible, try to remove role
+                try:
+                    await user.remove_roles(role)
+                except discord.errors.Forbidden:
+                    # if that fails, add to failed members
+                    forbidden.append(user.name)
+                else:
+                    removed.append(member_id)
+
+        # set last sync time
+        self.last_sync = int(time.time())
+
+        
+        return self.SyncChangesResults(new, removed, not_found, forbidden)
+        
 
     def _check_eligibility_of_member(self, member: object) -> bool:
         """ Checks if member is in at least one eligible membergroup. """
@@ -255,7 +312,11 @@ class WeblingSync(commands.Cog):
         
         members = response.json()
         
-        # TODO: check if members is iterable
+        # check if members is iterable
+        try:
+            iter(members)
+        except TypeError:
+            return None
 
         return members
     
@@ -325,14 +386,39 @@ class WeblingSync(commands.Cog):
     
     async def _get_changed_members(self) -> list[int]:
         changes = await self._get_changes()
-        changed_member_ids = changes['objects']['member']
-
-        # cast to list of integers
-        return list(map(int, changed_member_ids))
+        try:
+            changed_member_ids = changes['objects']['member']
+        except TypeError:
+            # no new members
+            return None
+        else:
+            # cast to list of integers
+            return list(map(int, changed_member_ids))
 
     class UserNotFound(Exception):
         """Raise when discord user could not be fetched"""
 
+    class SyncChangesResults():
+        def __init__(self, new : list[int], removed : list[int], not_found : list[int] = [], forbidden : list[str] = []):
+            self.new = new
+            self.removed = removed
+            self.not_found = not_found
+            self.forbidden = forbidden
+            self.time = time.time()
+        
+        def make_embed(self):
+            # sent sync report
+            embed = discord.Embed(title="Sync Report", color=0x009260)
+            embed.add_field(name=f"Last Sync: {time.ctime(self.time)}", inline=True)
+            embed.add_field(name=f"New Member IDs ({len(self.new)})", value=f"{', '.join(list(map(str, self.new)))}")
+            embed.add_field(name=f"Removed Member IDs ({len(self.removed)})", value=f"{', '.join(list(map(str, self.removed)))}")
+            if len(self.not_found) > 0:
+                embed.add_field(name=f"Member IDs with unmatched discord references ({len(self.not_found)})", value=f"{', '.join(list(map(str, self.not_found)))}", inline=True)
+            
+            if len(self.forbidden) > 0:
+                embed.add_field(name=f"Discord users that could not be modified ({len(self.forbidden)})", value=f"{', '.join(list(map(str, self.forbidden)))}", inline=True)
+
+            return embed
 
 async def setup(bot):
     await bot.add_cog(WeblingSync(bot))

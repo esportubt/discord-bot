@@ -23,12 +23,6 @@ intents.guild_scheduled_events = True
 
 bot = commands.Bot(command_prefix=commands.when_mentioned, intents=intents)
 
-@bot.event
-async def setup_hook():
-    for file in pathlib.Path("cogs").rglob("*.py"):
-        if file.stem.startswith("_"):
-            continue
-        await bot.load_extension(".".join(file.with_suffix("").parts))
 
 @bot.event
 async def on_ready():
@@ -37,8 +31,13 @@ async def on_ready():
         print(f"Guild with ID {DISCORD_GUILD_ID} not found")
     else:
         bot.guild = guild
-    await bot.change_presence(status=discord.Status.online)
+    # load cogs
+    for file in pathlib.Path("cogs").rglob("*.py"):
+        if file.stem.startswith("_"):
+            continue
+        await bot.load_extension(".".join(file.with_suffix("").parts))
     await bot.tree.sync()
+    await bot.change_presence(status=discord.Status.online)
     print(f'{bot.user} is online!')
 
 @bot.event
