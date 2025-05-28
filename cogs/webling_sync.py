@@ -27,7 +27,8 @@ class WeblingSync(commands.Cog):
         self.last_results = None
 
     async def cog_load(self):
-        self.sync_loop.start()
+        # self.sync_loop.start()
+        pass
     
     async def cog_unload(self):
         self.sync_loop.stop()
@@ -66,9 +67,9 @@ class WeblingSync(commands.Cog):
             return
 
         old : list[str] = []
-        new : list[str] = []
+        new : list[discord.member] = []
         not_found : list[int] = []
-        removed : list[str] = []
+        removed : list[discord.member] = []
         forbidden : list[str] = []
 
         for member in eligible_members:
@@ -88,7 +89,7 @@ class WeblingSync(commands.Cog):
                     # if not, try to add role
                     try:
                         await user.add_roles(role)
-                        new.append(user.name)
+                        new.append(user)
                     except discord.errors.Forbidden:
                         # if that fails, add to forbidden
                         print(f"Not allowed to add role to user {user.name}")
@@ -103,7 +104,7 @@ class WeblingSync(commands.Cog):
         for user in current_role_users:
             try:
                 await user.remove_roles(role)
-                removed.append(user.name)
+                removed.append(user)
             except discord.errors.Forbidden:
                 # add to forbidden
                 print(f"Not allowed to remove role from user {user.name}")
@@ -114,17 +115,39 @@ class WeblingSync(commands.Cog):
 
         # sent sync report
         embed = discord.Embed(title="Sync All Report", color=0x009260)
-        embed.add_field(name=f"Old Members ({len(old)})", value=f"{', '.join(list(map(str, old)))}")
-        embed.add_field(name=f"New Members ({len(new)})", value=f"{', '.join(list(map(str, new)))}")
-        embed.add_field(name=f"Removed Members ({len(current_role_users)})", value=f"{', '.join(list(map(str, removed)))}")
+        embed.add_field(name=f"Old Members ({len(old)})", value="")
+        embed.add_field(name=f"New Members ({len(new)})", value=self._list_members(new))
+        embed.add_field(name=f"Removed Members ({len(current_role_users)})", value=self._list_members(removed))
 
         if len(not_found) > 0:
-            embed.add_field(name=f"Member IDs with unmatched discord references ({len(not_found)})", value=f"{', '.join(list(map(str, not_found)))}", inline=True)
+            val = ', '.join(list(map(str, not_found)))
+            val = self._trucate_str(val)
+            
+            embed.add_field(name=f"Member IDs with unmatched discord references ({len(not_found)})", value=f"{val}", inline=True)
 
         if len(forbidden) > 0:
-            embed.add_field(name=f"Discord users that could not be modifie({len(forbidden)})", value=f"{', '.join(list(map(str, forbidden)))}", inline=True)
+            val = ', '.join(list(map(str, forbidden)))
+            val = self._trucate_str(val)
+
+            embed.add_field(name=f"Discord users that could not be modified ({len(forbidden)})", value=f"{val}", inline=True)
 
         await ctx.send(embed=embed)
+
+    def _list_members(self, members):
+        def mention(member : discord.member):
+            return f'<@{member.id}>'
+
+        val = ','.join(list(map(mention, members)))
+        return self._trucate_str(val)
+
+    def _trucate_str(self, s):
+        lim = 1024
+        delim = ','
+        if len(s) > lim:
+            s = s[:(lim-4)] + '..'
+            return s.rsplit(delim, 1)[0]
+        else:
+            return s
 
 
     @sync.command(name="changes")
@@ -284,8 +307,12 @@ class WeblingSync(commands.Cog):
         # try to fetch user by ID
         user_id = member['properties']['Discord-ID']
         if user_id:
-            user_id = int(user_id)
-            user = guild.get_member(user_id)
+            try:
+                user_id = int(user_id)
+            except ValueError:
+                pass
+            else:
+                user = guild.get_member(user_id)
         if user is None:
             # if it fails, try to fetch by name
             user_name = member['properties']['Discord-Benutzername']
