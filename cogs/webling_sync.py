@@ -27,8 +27,7 @@ class WeblingSync(commands.Cog):
         self.last_results = None
 
     async def cog_load(self):
-        # self.sync_loop.start()
-        pass
+        self.sync_loop.start()
     
     async def cog_unload(self):
         self.sync_loop.stop()
